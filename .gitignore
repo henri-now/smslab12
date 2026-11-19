@@ -8,3 +8,6 @@ __pycache__/
 
 # macOS metadata
 .DS_Store
+
+# Local lab schematic
+/PPG_Schematic.pdf
