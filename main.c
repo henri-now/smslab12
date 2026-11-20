@@ -22,9 +22,10 @@ constexpr int AVERAGE_FRAMES = 8;
 
 const SPISettings adcSpiSettings(2000000, MSBFIRST, SPI_MODE1);
 
-enum class Illumination { Off, Red, Infrared };
+enum class Illumination { Off, Red, Infrared, Green };
 
 void setIllumination(Illumination illumination) {
+  digitalWrite(PIN_LED_GREEN, LOW);
   digitalWrite(PIN_LED_RED, LOW);
   digitalWrite(PIN_LED_IR, LOW);
 
@@ -32,6 +33,8 @@ void setIllumination(Illumination illumination) {
     digitalWrite(PIN_LED_RED, HIGH);
   } else if (illumination == Illumination::Infrared) {
     digitalWrite(PIN_LED_IR, HIGH);
+  } else if (illumination == Illumination::Green) {
+    digitalWrite(PIN_LED_GREEN, HIGH);
   }
 }
 
@@ -109,7 +112,6 @@ void setup() {
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_LED_IR, OUTPUT);
-  digitalWrite(PIN_LED_GREEN, LOW);
   setIllumination(Illumination::Off);
 
   SPI.begin(D8, D9, D10, PIN_ADC_CS);
@@ -121,7 +123,7 @@ void setup() {
 
   // Give the USB serial interface time to appear after reset.
   delay(1000);
-  Serial.println("time_ms,off,red,ir,red_minus_off,ir_minus_off");
+  Serial.println("time_ms,off,red,ir,red_minus_off,ir_minus_off,green,green_minus_off");
 }
 
 void loop() {
@@ -129,10 +131,12 @@ void loop() {
   int32_t off;
   int32_t red;
   int32_t ir;
+  int32_t green;
 
   if (!measureSlot(Illumination::Off, off) ||
       !measureSlot(Illumination::Red, red) ||
-      !measureSlot(Illumination::Infrared, ir)) {
+      !measureSlot(Illumination::Infrared, ir) ||
+      !measureSlot(Illumination::Green, green)) {
     setIllumination(Illumination::Off);
     Serial.println("# ADC DRDY timeout");
     resetAdc();
@@ -141,11 +145,13 @@ void loop() {
   }
 
   setIllumination(Illumination::Off);
-  Serial.printf("%lu,%ld,%ld,%ld,%ld,%ld\n",
+  Serial.printf("%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
                 static_cast<unsigned long>(timeMs),
                 static_cast<long>(off),
                 static_cast<long>(red),
                 static_cast<long>(ir),
                 static_cast<long>(red - off),
-                static_cast<long>(ir - off));
+                static_cast<long>(ir - off),
+                static_cast<long>(green),
+                static_cast<long>(green - off));
 }

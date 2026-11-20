@@ -33,7 +33,7 @@
     .chart { background: white; border: 1px solid #dfe7ed; border-radius: 14px; padding: 22px 24px 12px; margin-bottom: 18px; }
     .chart h2 { margin: 0; font-size: 1rem; }
     .chart-heading span { font-size: .8rem; color: #708697; }
-    .red { color: #d64f63; } .blue { color: #217c9b; }
+    .red { color: #d64f63; } .blue { color: #217c9b; } .green { color: #25865a; }
     canvas { display: block; width: 100%; height: 220px; margin-top: 12px; }
     details { margin-top: 26px; padding: 18px 22px; border: 1px solid #dfe7ed; border-radius: 12px; background: #eaf0f5; }
     summary { cursor: pointer; font-weight: 600; }
@@ -67,6 +67,7 @@
   <p id="analysisStatus" class="analysis-status" role="status">Collecting an 8-second analysis window…</p>
   <section class="chart"><div class="chart-heading"><h2 class="red">Red channel</h2><span>Ambient-subtracted · ADC counts</span></div><canvas id="redChart" role="img" aria-label="Red optical signal over the last ten seconds"></canvas></section>
   <section class="chart"><div class="chart-heading"><h2 class="blue">Infrared channel</h2><span>Ambient-subtracted · ADC counts</span></div><canvas id="irChart" role="img" aria-label="Infrared optical signal over the last ten seconds"></canvas></section>
+  <section class="chart"><div class="chart-heading"><h2 class="green">Green channel</h2><span>Mean <b id="greenMean">—</b> · ADC counts</span></div><canvas id="greenChart" role="img" aria-label="Green optical signal over the last ten seconds"></canvas></section>
   <footer>10-second rolling view · Independent channel scales · Time is relative to the latest sample.<br>Experimental lab estimates, not validated for medical use. Demo results are simulated.<br>AI assistance: ChatGPT helped develop this page and its signal-processing code.</footer>
   <details><summary>SpO₂ calibration &amp; processing</summary>
     <div class="calibration">
@@ -77,12 +78,13 @@
     <p>SpO₂ (%) = intercept + slope × R. Enter coefficients fitted for your sensor and this processing pipeline. No default coefficients are assumed. Values outside 0–100% are rejected. Calibration is kept only while this page is open.</p>
     <p>After at least 8 seconds, samples are resampled to a uniform time grid. Separate second-order Butterworth high-pass (0.5 Hz) and low-pass (5 Hz) filters run forward and backward; one second at each edge is excluded. AC is the filtered standard deviation; DC is the absolute mean of the unfiltered channel over the same interior window. Heart rate uses the median interval between infrared peaks, with checks for interval regularity and red/infrared agreement. These checks cannot exclude all motion artifacts.</p>
     <p>This filter differs from the Python viewer’s bandpass design; check calibration again when changing processing. Filter coefficients follow the <a href="https://www.w3.org/TR/audio-eq-cookbook/">W3C Audio EQ Cookbook</a>.</p>
+    <p>The green signal is displayed separately. Heart rate still uses infrared, and R and SpO₂ still use red and infrared.</p>
   </details>
   <details><summary>How to connect</summary><ol>
     <li>Connect the XIAO using a USB data cable and flash the existing acquisition firmware.</li>
     <li>Close the Arduino serial monitor and Python viewer so the USB port is free.</li>
     <li>Open this page in desktop Chrome or Edge, click <b>Connect USB</b>, and choose the board. The connection uses 115200 baud.</li>
-  </ol><p>Serve this folder with <code>python3 -m http.server 8000 --bind 127.0.0.1</code>, then open <code>http://localhost:8000</code>. Web Serial requires a supported browser and a secure context such as localhost or HTTPS. No data is uploaded.</p><p>Expected CSV: <code>time_ms,off,red,ir,red_minus_off,ir_minus_off</code>. Headers and firmware status messages are skipped. A board reset clears the plot.</p></details>
+  </ol><p>Serve this folder with <code>python3 -m http.server 8000 --bind 127.0.0.1</code>, then open <code>http://localhost:8000</code>. Web Serial requires a supported browser and a secure context such as localhost or HTTPS. No data is uploaded.</p><p>Expected CSV: <code>time_ms,off,red,ir,red_minus_off,ir_minus_off,green,green_minus_off</code>. Reflash the board with the updated eight-column firmware. Headers and firmware status messages are skipped. A board reset clears the plot.</p></details>
 </main>
 <script>
   'use strict';
@@ -115,7 +117,7 @@
 
   function parseRecord(record) {
     const fields = record.trim().split(',');
-    if (fields.length !== 6 || fields.some(field => !/^-?\d+$/.test(field))) return;
+    if (fields.length !== 8 || fields.some(field => !/^-?\d+$/.test(field))) return;
     const row = fields.map(Number);
     if (!row.every(Number.isSafeInteger) || row[0] < 0) return;
     append(row);
@@ -200,6 +202,7 @@
     const center = mean(values);
     return Math.sqrt(mean(values.map(value => (value - center) ** 2)));
   };
+  const rawClipped = row => [1, 2, 3, 6].some(column => row[column] >= 8388607 || row[column] <= -8388608);
 
   function biquad(values, frequency, sampleRate, highpass) {
     // Butterworth Q = 1/sqrt(2); RBJ coefficients, W3C Audio EQ Cookbook.
@@ -232,7 +235,7 @@
   function analyze(samples) {
     const unavailable = message => ({ message, bpm: null, ratio: null });
     if (samples.length < 2) return unavailable('Waiting for samples');
-    if (samples.some(row => row.length !== 6 || row.some(value => !Number.isFinite(value)))) {
+    if (samples.some(row => row.length !== 8 || row.some(value => !Number.isFinite(value)))) {
       return unavailable('Invalid sample data');
     }
     const start = samples[0][0], duration = (samples[samples.length - 1][0] - start) / 1000;
@@ -241,7 +244,7 @@
     if (steps.some(step => step <= 0 || step > .25) || dt >= 1 / 12) {
       return unavailable('Sample rate too low or data gap');
     }
-    if (samples.some(row => row.slice(1, 4).some(value => value >= 8388607 || value <= -8388608))) {
+    if (samples.some(rawClipped)) {
       return unavailable('ADC clipping detected');
     }
     if (duration < 8) return unavailable(`Collecting an 8-second window (${duration.toFixed(1)} / 8.0 s)`);
@@ -336,8 +339,7 @@
     if (!rows.length) { low = 0; high = 1; }
     // Keep demo axes steady instead of rescaling as each peak enters the view.
     if (source === 'demo') {
-      const center = column === 4 ? 18000 : 25000;
-      const amplitude = column === 4 ? 220 : 500;
+      const [center, amplitude] = { 4: [18000, 220], 5: [25000, 500], 7: [21000, 700] }[column];
       low = center - amplitude * 1.12;
       high = center + amplitude * 1.12;
     }
@@ -377,21 +379,23 @@
         const pulse = Math.sin(phase) + .12 * Math.sin(2 * phase + .7);
         const red = 18000 + 220 * pulse;
         const ir = 25000 + 500 * pulse;
-        append([demoTime, 4000000, 4000000 + red, 4000000 + ir, red, ir]);
+        const green = 21000 + 700 * pulse;
+        append([demoTime, 4000000, 4000000 + red, 4000000 + ir, red, ir, 4000000 + green, green]);
       }
       demoLast = count === 40 ? now : demoLast + count * 15;
     }
     const stale = mode === 'serial' && now - lastReceived > 2000;
     if (mode === 'serial') {
-      const clipped = rows.some(row => row.slice(1, 4).some(value => value >= 8388607 || value <= -8388608));
+      const clipped = rows.some(rawClipped);
       $('status').textContent = stale ? 'No recent samples. Check the firmware and USB connection.' : clipped ? 'ADC clipping detected. Check signal levels.' : rows.length ? 'Receiving live USB samples. Nothing is uploaded.' : 'USB connected. Waiting for CSV samples…';
     }
     const duration = rows.length > 1 ? (rows[rows.length - 1][0] - rows[0][0]) / 1000 : 0;
     $('rate').textContent = duration && !stale ? ((rows.length - 1) / duration).toFixed(1) : '—';
-    for (const [id, col] of [['redMean', 4], ['irMean', 5]]) {
+    for (const [id, col] of [['redMean', 4], ['irMean', 5], ['greenMean', 7]]) {
       $(id).textContent = rows.length && !stale ? Math.round(rows.reduce((sum, row) => sum + row[col], 0) / rows.length).toLocaleString() : '—';
     }
     drawChart('redChart', 4, '#d64f63'); drawChart('irChart', 5, '#217c9b');
+    drawChart('greenChart', 7, '#25865a');
     updateAnalysis(now);
     requestAnimationFrame(render);
   }
